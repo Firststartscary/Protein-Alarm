@@ -12,7 +12,7 @@ TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 CHAT_ID = os.environ.get("CHAT_ID")
 TARGET_URL = "https://gall.dcinside.com/mgallery/board/lists/?id=nutrient"
 
-WORD_REPEAT_THRESHOLD = 4
+WORD_REPEAT_THRESHOLD = 1
 RECENT_POSTS_TO_CHECK = 15
 
 STATE_FILE = "notified_state.json"
