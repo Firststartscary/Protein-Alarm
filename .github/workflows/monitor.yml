@@ -2,7 +2,7 @@ name: Protein Alarm
 
 on:
   schedule:
-    - cron: '*/5 * * * *'   # 5분마다 실행 (GitHub 서버 상황에 따라 약간 지연될 수 있음)
+    - cron: '*/5 * * * *'
   workflow_dispatch:         # "Run workflow" 버튼으로 수동 실행도 가능
 
 permissions:
