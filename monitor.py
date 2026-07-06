@@ -3,7 +3,7 @@ import json
 import time
 import requests
 from bs4 import BeautifulSoup
-from collections import Counter
+from datetime import datetime, timezone, timedelta
 
 # =========================================================================
 # [설정] 토큰/CHAT_ID는 GitHub Secrets에서 환경변수로 불러옵니다.
@@ -12,8 +12,17 @@ TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 CHAT_ID = os.environ.get("CHAT_ID")
 TARGET_URL = "https://gall.dcinside.com/mgallery/board/lists/?id=nutrient"
 
-WORD_REPEAT_THRESHOLD = 4
+WORD_REPEAT_THRESHOLD = 4      # 몇 개 이상의 "서로 다른 글"에 나와야 알림 보낼지
 RECENT_POSTS_TO_CHECK = 15
+NGRAM_MIN = 2                  # 조각 최소 길이 (2글자)
+NGRAM_MAX = 4                  # 조각 최대 길이 (4글자)
+
+# 너무 흔해서 스팸으로 오인될 만한 일반 단어/조사 (필요시 계속 추가)
+STOPWORDS = {
+    "일반", "질문", "이거", "그거", "저거", "근데", "그냥", "진짜",
+    "너무", "이렇게", "그렇게", "어떻게", "합니다", "습니다", "인가",
+    "인데", "는데", "니까", "에서", "부터", "까지", "으로", "하는",
+}
 
 STATE_FILE = "notified_state.json"
 # =========================================================================
@@ -75,21 +84,41 @@ def monitor_gallery():
                 if title_text:
                     realtime_titles.append(title_text)
 
-        all_words = []
-        for title in realtime_titles:
-            words = [w for w in title.split() if len(w) >= 2]
-            all_words.extend(words)
+        # 공백 제거 + n-gram(2~4글자 조각) 추출
+        titles_nospace = [t.replace(" ", "") for t in realtime_titles]
 
-        word_counts = Counter(all_words)
+        def extract_ngrams(text):
+            grams = set()  # 같은 글 안에서 중복 조각은 1번만 세기 위해 set 사용
+            for n in range(NGRAM_MIN, NGRAM_MAX + 1):
+                for i in range(len(text) - n + 1):
+                    gram = text[i:i + n]
+                    if gram not in STOPWORDS:
+                        grams.add(gram)
+            return grams
 
-        print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 최신 {len(realtime_titles)}개 글 제목 분석 중...")
+        # "서로 다른 몇 개의 글"에 등장했는지 카운트 (한 글 안에서 반복돼도 1번만 카운트)
+        ngram_post_count = {}
+        for title in titles_nospace:
+            for gram in extract_ngrams(title):
+                ngram_post_count[gram] = ngram_post_count.get(gram, 0) + 1
 
+        kst_now = datetime.now(timezone.utc) + timedelta(hours=9)
+        print(f"[{kst_now.strftime('%Y-%m-%d %H:%M:%S')} KST] 최신 {len(realtime_titles)}개 글 제목 분석 중...")
+
+        # threshold 이상 나온 조각들만 추리기
+        candidates = {g: c for g, c in ngram_post_count.items() if c >= WORD_REPEAT_THRESHOLD}
+
+        # 짧은 조각이 긴 조각에 포함되는 경우 중복 알림 방지 (긴 조각 우선)
         detected_keywords = []
-        for word, count in word_counts.items():
-            if word in ['일반', '질문', '념글', '추천']:
+        sorted_grams = sorted(candidates.keys(), key=len, reverse=True)
+        already_covered = []
+        for gram in sorted_grams:
+            if any(gram in longer for longer in already_covered):
                 continue
-            if count >= WORD_REPEAT_THRESHOLD:
-                detected_keywords.append((word, count))
+            already_covered.append(gram)
+            detected_keywords.append((gram, candidates[gram]))
+
+        print("  - 감지 후보:", detected_keywords)
 
         current_round_keywords = set()
         for word, count in detected_keywords:
