@@ -73,16 +73,19 @@ def monitor_gallery():
         post_rows = soup.select('tr.ub-content.us-post')
 
         realtime_titles = []
-        for row in post_rows[:RECENT_POSTS_TO_CHECK]:
+        for row in post_rows:   # 상위 N개로 미리 자르지 않고 전체를 순회
             subject_element = row.select_one('td.gall_subject')
             if subject_element and '공지' in subject_element.text:
-                continue
+                continue   # 공지글은 건너뛰고 계속 진행 (슬롯 낭비 안 함)
 
             title_element = row.select_one('td.gall_tit a')
             if title_element:
                 title_text = title_element.text.strip()
                 if title_text:
                     realtime_titles.append(title_text)
+
+            if len(realtime_titles) >= RECENT_POSTS_TO_CHECK:
+                break   # 목표한 "일반 게시글" 개수를 채우면 그때 멈춤
 
         # 공백 제거 + n-gram(2~4글자 조각) 추출
         titles_nospace = [t.replace(" ", "") for t in realtime_titles]
