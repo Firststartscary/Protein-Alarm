@@ -46,7 +46,12 @@ def send_telegram_msg(text):
         print("텔레그램 토큰/CHAT_ID가 설정되지 않았습니다. (GitHub Secrets 확인)")
         return
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {"chat_id": CHAT_ID, "text": text}
+    payload = {
+        "chat_id": CHAT_ID,
+        "text": text,
+        "parse_mode": "HTML",
+        "disable_web_page_preview": True,   # 링크 미리보기 카드도 안 뜨게 함
+    }
     try:
         r = requests.post(url, json=payload, timeout=10)
         print("텔레그램 응답:", r.status_code)
@@ -128,10 +133,10 @@ def monitor_gallery():
             current_round_keywords.add(word)
 
             if word not in already_notified_keywords:
-                msg = f"🚨 [영양제 갤러리 특가 의심 단어 감지!]\n\n" \
+                msg = f"🚨 <b>[프로틴 특가 의심 단어 감지!]</b>\n\n" \
                       f"▶ 감지된 키워드: '{word}' ({count}회 도배 중)\n\n" \
                       f"지금 게시판에 해당 단어가 연속으로 올라오고 있습니다. 특가나 가격 오류일 확률이 높으니 확인해 보세요!\n" \
-                      f"🔗 {TARGET_URL}"
+                      f'<a href="{TARGET_URL}">🔗 확인하기</a>'
 
                 send_telegram_msg(msg)
                 print(f"🚨 알림 발송 완료! 키워드: {word} ({count}회)")
