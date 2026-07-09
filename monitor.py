@@ -4,6 +4,7 @@ import time
 import requests
 from bs4 import BeautifulSoup
 from datetime import datetime, timezone, timedelta
+from urllib.parse import quote, urljoin
 
 # =========================================================================
 # [설정] 토큰/CHAT_ID는 GitHub Secrets에서 환경변수로 불러옵니다.
@@ -11,6 +12,7 @@ from datetime import datetime, timezone, timedelta
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 CHAT_ID = os.environ.get("CHAT_ID")
 TARGET_URL = "https://gall.dcinside.com/mgallery/board/lists/?id=nutrient"
+SITE_BASE = "https://gall.dcinside.com"
 
 WORD_REPEAT_THRESHOLD = 4      # 몇 개 이상의 "서로 다른 글"에 나와야 알림 보낼지
 RECENT_POSTS_TO_CHECK = 15
@@ -77,7 +79,7 @@ def monitor_gallery():
         soup = BeautifulSoup(response.text, 'html.parser')
         post_rows = soup.select('tr.ub-content.us-post')
 
-        realtime_titles = []
+        realtime_posts = []   # [{"title": ..., "link": ...}, ...]
         for row in post_rows:   # 상위 N개로 미리 자르지 않고 전체를 순회
             subject_element = row.select_one('td.gall_subject')
             if subject_element and '공지' in subject_element.text:
@@ -86,14 +88,17 @@ def monitor_gallery():
             title_element = row.select_one('td.gall_tit a')
             if title_element:
                 title_text = title_element.text.strip()
-                if title_text:
-                    realtime_titles.append(title_text)
+                href = title_element.get('href', '')
+                if title_text and href:
+                    full_link = urljoin(SITE_BASE, href)
+                    realtime_posts.append({"title": title_text, "link": full_link})
 
-            if len(realtime_titles) >= RECENT_POSTS_TO_CHECK:
+            if len(realtime_posts) >= RECENT_POSTS_TO_CHECK:
                 break   # 목표한 "일반 게시글" 개수를 채우면 그때 멈춤
 
-        # 공백 제거 + n-gram(2~4글자 조각) 추출
-        titles_nospace = [t.replace(" ", "") for t in realtime_titles]
+        # 공백 제거 (제목 매칭용)
+        for post in realtime_posts:
+            post["nospace"] = post["title"].replace(" ", "")
 
         def extract_ngrams(text):
             grams = set()  # 같은 글 안에서 중복 조각은 1번만 세기 위해 set 사용
@@ -104,14 +109,16 @@ def monitor_gallery():
                         grams.add(gram)
             return grams
 
-        # "서로 다른 몇 개의 글"에 등장했는지 카운트 (한 글 안에서 반복돼도 1번만 카운트)
+        # "서로 다른 몇 개의 글"에 등장했는지 카운트 + 어느 게시글인지 기록
         ngram_post_count = {}
-        for title in titles_nospace:
-            for gram in extract_ngrams(title):
+        ngram_matched_posts = {}
+        for post in realtime_posts:
+            for gram in extract_ngrams(post["nospace"]):
                 ngram_post_count[gram] = ngram_post_count.get(gram, 0) + 1
+                ngram_matched_posts.setdefault(gram, []).append(post)
 
         kst_now = datetime.now(timezone.utc) + timedelta(hours=9)
-        print(f"[{kst_now.strftime('%Y-%m-%d %H:%M:%S')} KST] 최신 {len(realtime_titles)}개 글 제목 분석 중...")
+        print(f"[{kst_now.strftime('%Y-%m-%d %H:%M:%S')} KST] 최신 {len(realtime_posts)}개 글 제목 분석 중...")
 
         # threshold 이상 나온 조각들만 추리기
         candidates = {g: c for g, c in ngram_post_count.items() if c >= WORD_REPEAT_THRESHOLD}
@@ -133,9 +140,21 @@ def monitor_gallery():
             current_round_keywords.add(word)
 
             if word not in already_notified_keywords:
+                matched_posts = ngram_matched_posts.get(word, [])
+
+                # 각 게시글 링크에 텍스트 하이라이트 프래그먼트(#:~:text=단어) 추가
+                # 지원 브라우저(Chrome, 삼성인터넷, Edge 등)에서 해당 단어가 노란 형광펜으로 자동 하이라이트됨
+                post_lines = []
+                for p in matched_posts[:5]:   # 너무 길어지지 않게 최대 5개만 표시
+                    highlight_link = f'{p["link"]}#:~:text={quote(word)}'
+                    post_lines.append(f'• <a href="{highlight_link}">{p["title"]}</a>')
+
+                posts_section = "\n".join(post_lines) if post_lines else "(게시글 정보를 찾지 못했습니다)"
+
                 msg = f"🚨 <b>[프로틴 특가 의심 단어 감지!]</b>\n\n" \
                       f"▶ 감지된 키워드: '{word}' ({count}회 도배 중)\n\n" \
-                      f"지금 게시판에 해당 단어가 연속으로 올라오고 있습니다. 특가나 가격 오류일 확률이 높으니 확인해 보세요!\n" \
+                      f"지금 게시판에 해당 단어가 연속으로 올라오고 있습니다. 특가나 가격 오류일 확률이 높으니 확인해 보세요!\n\n" \
+                      f"<b>감지된 게시글:</b>\n{posts_section}\n\n" \
                       f'<a href="{TARGET_URL}">🔗 확인하기</a>'
 
                 send_telegram_msg(msg)
