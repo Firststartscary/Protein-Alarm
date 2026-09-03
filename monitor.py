@@ -1,5 +1,6 @@
 import os
 import json
+import re
 import time
 import requests
 from bs4 import BeautifulSoup
@@ -19,12 +20,22 @@ RECENT_POSTS_TO_CHECK = 15
 NGRAM_MIN = 2                  # 조각 최소 길이 (2글자)
 NGRAM_MAX = 4                  # 조각 최대 길이 (4글자)
 
+# 게시글 하나의 "추천수"가 이 값 이상이면 (단어 도배가 아니어도) 급인기 게시글로 별도 감지
+SPIKE_RECOMMEND_THRESHOLD = 15
+
+# 이 단어들은 딱 1번만 나와도(반복 안 돼도) 바로 알림. 필요시 계속 추가하세요.
+PRIORITY_KEYWORDS = {
+    "가격오류", "오류", "품절", "완판", "가격실수", "가격이상",
+}
+
 # 너무 흔해서 스팸으로 오인될 만한 일반 단어/조사 (필요시 계속 추가)
 STOPWORDS = {
     "일반", "질문", "이거", "그거", "저거", "근데", "그냥", "진짜",
     "너무", "이렇게", "그렇게", "어떻게", "합니다", "습니다", "인가",
     "인데", "는데", "니까", "에서", "부터", "까지", "으로", "하는",
-    "식단", "점심", "운동", "헬스", "남자", "여자", "운동", "는거",
+    "식단", "점심", "운동", "헬스", "남자", "여자", "는거",
+    "시발", "단백", "기한", "프로틴", "오늘", "맛있", "먹어",
+    "으면", "저녁", "먹고", "보충제", "그리고", "있는데",
 }
 
 STATE_FILE = "notified_state.json"
@@ -53,13 +64,18 @@ def send_telegram_msg(text):
         "chat_id": CHAT_ID,
         "text": text,
         "parse_mode": "HTML",
-        "disable_web_page_preview": True,   # 링크 미리보기 카드도 안 뜨게 함
+        "disable_web_page_preview": True,
     }
     try:
         r = requests.post(url, json=payload, timeout=10)
         print("텔레그램 응답:", r.status_code)
     except Exception as e:
         print(f"텔레그램 발송 에러: {e}")
+
+
+def clean_text(text):
+    """한글/영문/숫자만 남기고 마침표, 물음표, ㅋㅋㅋ, .. 같은 잡음 제거"""
+    return re.sub(r'[^가-힣A-Za-z0-9]', '', text)
 
 
 def monitor_gallery():
@@ -80,29 +96,41 @@ def monitor_gallery():
         soup = BeautifulSoup(response.text, 'html.parser')
         post_rows = soup.select('tr.ub-content.us-post')
 
-        realtime_posts = []   # [{"title": ..., "link": ...}, ...]
-        for row in post_rows:   # 상위 N개로 미리 자르지 않고 전체를 순회
+        realtime_posts = []   # [{"title", "link", "recommend"}, ...]
+        for row in post_rows:
             subject_element = row.select_one('td.gall_subject')
             if subject_element and '공지' in subject_element.text:
-                continue   # 공지글은 건너뛰고 계속 진행 (슬롯 낭비 안 함)
+                continue
 
             title_element = row.select_one('td.gall_tit a')
             if title_element:
                 title_text = title_element.text.strip()
                 href = title_element.get('href', '')
+
+                recommend_el = row.select_one('td.gall_recommend')
+                recommend_text = recommend_el.text.strip() if recommend_el else '0'
+                try:
+                    recommend_count = int(recommend_text)
+                except ValueError:
+                    recommend_count = 0
+
                 if title_text and href:
                     full_link = urljoin(SITE_BASE, href)
-                    realtime_posts.append({"title": title_text, "link": full_link})
+                    realtime_posts.append({
+                        "title": title_text,
+                        "link": full_link,
+                        "recommend": recommend_count,
+                    })
 
             if len(realtime_posts) >= RECENT_POSTS_TO_CHECK:
-                break   # 목표한 "일반 게시글" 개수를 채우면 그때 멈춤
+                break
 
-        # 공백 제거 (제목 매칭용)
+        # 구두점/공백 다 제거한 "순수 텍스트"로 정리 (마침표, 물음표, .. 등 잡음 제거)
         for post in realtime_posts:
-            post["nospace"] = post["title"].replace(" ", "")
+            post["nospace"] = clean_text(post["title"])
 
         def extract_ngrams(text):
-            grams = set()  # 같은 글 안에서 중복 조각은 1번만 세기 위해 set 사용
+            grams = set()
             for n in range(NGRAM_MIN, NGRAM_MAX + 1):
                 for i in range(len(text) - n + 1):
                     gram = text[i:i + n]
@@ -110,7 +138,6 @@ def monitor_gallery():
                         grams.add(gram)
             return grams
 
-        # "서로 다른 몇 개의 글"에 등장했는지 카운트 + 어느 게시글인지 기록
         ngram_post_count = {}
         ngram_matched_posts = {}
         for post in realtime_posts:
@@ -121,10 +148,8 @@ def monitor_gallery():
         kst_now = datetime.now(timezone.utc) + timedelta(hours=9)
         print(f"[{kst_now.strftime('%Y-%m-%d %H:%M:%S')} KST] 최신 {len(realtime_posts)}개 글 제목 분석 중...")
 
-        # threshold 이상 나온 조각들만 추리기
         candidates = {g: c for g, c in ngram_post_count.items() if c >= WORD_REPEAT_THRESHOLD}
 
-        # 짧은 조각이 긴 조각에 포함되는 경우 중복 알림 방지 (긴 조각 우선)
         detected_keywords = []
         sorted_grams = sorted(candidates.keys(), key=len, reverse=True)
         already_covered = []
@@ -134,22 +159,20 @@ def monitor_gallery():
             already_covered.append(gram)
             detected_keywords.append((gram, candidates[gram]))
 
-        print("  - 감지 후보:", detected_keywords)
+        print("  - 감지 후보(단어 도배):", detected_keywords)
 
         current_round_keywords = set()
+
+        # ---- 감지 1: 같은 단어가 여러 글에 반복 (기존 도배 감지) ----
         for word, count in detected_keywords:
             current_round_keywords.add(word)
 
             if word not in already_notified_keywords:
                 matched_posts = ngram_matched_posts.get(word, [])
-
-                # 각 게시글 링크에 텍스트 하이라이트 프래그먼트(#:~:text=단어) 추가
-                # 지원 브라우저(Chrome, 삼성인터넷, Edge 등)에서 해당 단어가 노란 형광펜으로 자동 하이라이트됨
                 post_lines = []
-                for p in matched_posts[:5]:   # 너무 길어지지 않게 최대 5개만 표시
+                for p in matched_posts[:5]:
                     highlight_link = f'{p["link"]}#:~:text={quote(word)}'
                     post_lines.append(f'• <a href="{highlight_link}">{p["title"]}</a>')
-
                 posts_section = "\n".join(post_lines) if post_lines else "(게시글 정보를 찾지 못했습니다)"
 
                 msg = f"🚨 <b>[프로틴 특가 의심 단어 감지!]</b>\n\n" \
@@ -159,7 +182,42 @@ def monitor_gallery():
                       f'<a href="{TARGET_URL}">🔗 확인하기</a>'
 
                 send_telegram_msg(msg)
-                print(f"🚨 알림 발송 완료! 키워드: {word} ({count}회)")
+                print(f"🚨 알림 발송 완료! (도배) 키워드: {word} ({count}회)")
+
+        # ---- 감지 2: 단어 반복 없이도, 추천수가 비정상적으로 높은 게시글 ----
+        spike_posts = [p for p in realtime_posts if p["recommend"] >= SPIKE_RECOMMEND_THRESHOLD]
+        print("  - 감지 후보(추천수 급증):", [(p["title"], p["recommend"]) for p in spike_posts])
+
+        for p in spike_posts:
+            state_key = f"spike::{p['link']}"
+            current_round_keywords.add(state_key)
+
+            if state_key not in already_notified_keywords:
+                msg = f"🔥 <b>[반응 급증 게시글 감지!]</b>\n\n" \
+                      f"▶ 추천수 {p['recommend']}회로 갑자기 반응이 몰리고 있습니다.\n" \
+                      f"단어 도배는 아니지만, 특가/가격오류/화제성 이슈일 가능성이 있어요!\n\n" \
+                      f'• <a href="{p["link"]}">{p["title"]}</a>\n\n' \
+                      f'<a href="{TARGET_URL}">🔗 갤러리 확인하기</a>'
+
+                send_telegram_msg(msg)
+                print(f"🔥 알림 발송 완료! (추천수 급증) 게시글: {p['title']} ({p['recommend']}추천)")
+
+        # ---- 감지 3: 우선순위 키워드는 반복 없이 1번만 나와도 즉시 알림 ----
+        for p in realtime_posts:
+            for keyword in PRIORITY_KEYWORDS:
+                if keyword in p["nospace"]:
+                    state_key = f"priority::{keyword}::{p['link']}"
+                    current_round_keywords.add(state_key)
+
+                    if state_key not in already_notified_keywords:
+                        msg = f"⚡ <b>[중요 키워드 즉시 감지!]</b>\n\n" \
+                              f"▶ 감지된 키워드: '{keyword}' (반복 여부와 무관하게 즉시 알림)\n\n" \
+                              f"이 단어는 발견 즉시 알려드리도록 설정된 우선순위 키워드입니다.\n\n" \
+                              f'• <a href="{p["link"]}">{p["title"]}</a>\n\n' \
+                              f'<a href="{TARGET_URL}">🔗 갤러리 확인하기</a>'
+
+                        send_telegram_msg(msg)
+                        print(f"⚡ 알림 발송 완료! (우선순위 키워드) '{keyword}' - {p['title']}")
 
         save_state(current_round_keywords)
 
