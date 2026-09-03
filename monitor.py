@@ -197,7 +197,7 @@ def monitor_gallery():
                       f"▶ 추천수 {p['recommend']}회로 갑자기 반응이 몰리고 있습니다.\n" \
                       f"단어 도배는 아니지만, 특가/가격오류/화제성 이슈일 가능성이 있어요!\n\n" \
                       f'• <a href="{p["link"]}">{p["title"]}</a>\n\n' \
-                      f'<a href="{TARGET_URL}">🔗 갤러리 확인하기</a>'
+                      f'<a href="{TARGET_URL}">🔗 확인하기</a>'
 
                 send_telegram_msg(msg)
                 print(f"🔥 알림 발송 완료! (추천수 급증) 게시글: {p['title']} ({p['recommend']}추천)")
@@ -214,7 +214,7 @@ def monitor_gallery():
                               f"▶ 감지된 키워드: '{keyword}' (반복 여부와 무관하게 즉시 알림)\n\n" \
                               f"이 단어는 발견 즉시 알려드리도록 설정된 우선순위 키워드입니다.\n\n" \
                               f'• <a href="{p["link"]}">{p["title"]}</a>\n\n' \
-                              f'<a href="{TARGET_URL}">🔗 갤러리 확인하기</a>'
+                              f'<a href="{TARGET_URL}">🔗 확인하기</a>'
 
                         send_telegram_msg(msg)
                         print(f"⚡ 알림 발송 완료! (우선순위 키워드) '{keyword}' - {p['title']}")
